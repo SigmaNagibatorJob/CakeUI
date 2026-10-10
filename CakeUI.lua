@@ -1,5 +1,5 @@
 --[[
-    CakeUI v0.1.0
+    Vector3 v0.2.0
     Original Roblox/Luau UI module.
 
     Design references:
@@ -16,10 +16,10 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
-assert(LocalPlayer, "CakeUI must be required from a client LocalScript")
+assert(LocalPlayer, "Vector3 must run on the Roblox client")
 
-local CakeUI = {
-    Version = "0.1.0",
+local Vector3 = {
+    Version = "0.2.0",
 }
 
 local DEFAULT_THEME = {
@@ -177,9 +177,43 @@ local function registerConnection(context, signal, callback)
     return connection
 end
 
+local function resolveGuiParent()
+    -- Prefer an executor-provided UI container when available, but keep the
+    -- library usable in ordinary client environments as a fallback.
+    local customParent
+    if type(gethui) == "function" then
+        local ok, result = pcall(gethui)
+        if ok and typeof(result) == "Instance" then
+            customParent = result
+        end
+    end
+    if customParent then
+        return customParent
+    end
+
+    local coreGui = game:GetService("CoreGui")
+    local canUseCoreGui = pcall(function()
+        local probe = Instance.new("ScreenGui")
+        probe.Name = "Vector3ParentProbe"
+        probe.Parent = coreGui
+        probe:Destroy()
+    end)
+    if canUseCoreGui then
+        return coreGui
+    end
+
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
 local function createContext(options)
     options = options or {}
-    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    local guiParent = resolveGuiParent()
+    local guiName = options.GuiName or "Vector3"
+    -- Prevent duplicate windows when the script is re-executed.
+    local oldGui = guiParent:FindFirstChild(guiName)
+    if oldGui then
+        oldGui:Destroy()
+    end
     local theme = table.clone(DEFAULT_THEME)
 
     if typeof(options.Accent) == "Color3" then
@@ -232,13 +266,13 @@ local function createContext(options)
         for _, callback in ipairs(self._accentCallbacks) do
             local success, errorMessage = pcall(callback, color)
             if not success then
-                warn("[CakeUI] Accent update failed:", errorMessage)
+                warn("[Vector3] Accent update failed:", errorMessage)
             end
         end
     end
 
-    local gui = create("ScreenGui", playerGui, {
-        Name = options.GuiName or "CakeUI",
+    local gui = create("ScreenGui", guiParent, {
+        Name = guiName,
         ResetOnSpawn = false,
         IgnoreGuiInset = true,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
@@ -268,7 +302,7 @@ local function createContext(options)
             return
         end
 
-        local title = tostring(data.Title or "CakeUI")
+        local title = tostring(data.Title or "Vector3")
         local message = tostring(data.Content or data.Message or "")
         local duration = math.max(1, tonumber(data.Duration) or 3)
 
@@ -328,7 +362,7 @@ local function createContext(options)
     return context
 end
 
-function CakeUI:CreateWindow(options)
+function Vector3:CreateWindow(options)
     options = options or {}
     local ui = createContext(options)
 
@@ -346,6 +380,12 @@ function CakeUI:CreateWindow(options)
     windowFrame.ClipsDescendants = false
     addStroke(windowFrame, ui.Theme.Border, 1)
 
+    local windowScale = create("UIScale", windowFrame, { Scale = 0.90 })
+    windowFrame.BackgroundTransparency = 0.06
+    TweenService:Create(windowScale, TweenInfo.new(0.30, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Scale = 1,
+    }):Play()
+
     local topbar = create("Frame", windowFrame, {
         Name = "Topbar",
         Size = UDim2.new(1, 0, 0, 53),
@@ -353,7 +393,7 @@ function CakeUI:CreateWindow(options)
         BorderSizePixel = 0,
     })
 
-    makeLabel(topbar, tostring(options.Title or "CakeUI"), UDim2.new(1, -130, 0, 23), UDim2.fromOffset(17, 7), {
+    makeLabel(topbar, tostring(options.Title or "Vector3"), UDim2.new(1, -130, 0, 23), UDim2.fromOffset(17, 7), {
         Font = Enum.Font.GothamBold,
         TextSize = 16,
     })
@@ -431,19 +471,70 @@ function CakeUI:CreateWindow(options)
         ui:Destroy()
     end
 
+    local visibilityToken = 0
+    function window:SetVisible(visible)
+        if ui._destroyed then
+            return
+        end
+        visibilityToken += 1
+        local token = visibilityToken
+        if visible then
+            windowFrame.Visible = true
+            windowScale.Scale = 0.92
+            TweenService:Create(windowScale, TweenInfo.new(0.20, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                Scale = 1,
+            }):Play()
+        else
+            local tween = TweenService:Create(windowScale, TweenInfo.new(0.13, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                Scale = 0.92,
+            })
+            tween:Play()
+            tween.Completed:Connect(function()
+                if token == visibilityToken and not ui._destroyed then
+                    windowFrame.Visible = false
+                end
+            end)
+        end
+    end
+
+    function window:Close()
+        if ui._destroyed or ui._closing then
+            return
+        end
+        ui._closing = true
+        local tween = TweenService:Create(windowScale, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Scale = 0.90,
+        })
+        tween:Play()
+        tween.Completed:Connect(function()
+            ui:Destroy()
+        end)
+    end
+
     local function refreshTabs()
         for _, tab in ipairs(window._tabs) do
             local selected = tab == window._selectedTab
-            tab.Button.BackgroundColor3 = selected and ui.Theme.Accent or ui.Theme.Surface
-            tab.Button.TextColor3 = selected and Color3.new(1, 1, 1) or ui.Theme.Muted
-            tab.Button.BackgroundTransparency = selected and 0 or 1
+            playTween(tab.Button, 0.16, {
+                BackgroundColor3 = selected and ui.Theme.Accent or ui.Theme.Surface,
+                BackgroundTransparency = selected and 0 or 1,
+                TextColor3 = selected and Color3.new(1, 1, 1) or ui.Theme.Muted,
+            })
         end
     end
 
     local function selectTab(tab)
         window._selectedTab = tab
         for _, item in ipairs(window._tabs) do
-            item.Page.Visible = item == tab
+            local selected = item == tab
+            item.Page.Visible = selected
+            if selected then
+                item.Page.Position = UDim2.fromOffset(8, 0)
+                TweenService:Create(item.Page, TweenInfo.new(0.18, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                    Position = UDim2.new(),
+                }):Play()
+            else
+                item.Page.Position = UDim2.new()
+            end
         end
         refreshTabs()
     end
@@ -493,6 +584,17 @@ function CakeUI:CreateWindow(options)
         end
     end)
 
+    local toggleKey = options.ToggleKey or Enum.KeyCode.RightShift
+    ui.ToggleKey = toggleKey
+    ui:Connect(UserInputService.InputBegan, function(input, gameProcessed)
+        if gameProcessed or input.UserInputType ~= Enum.UserInputType.Keyboard then
+            return
+        end
+        if input.KeyCode == toggleKey then
+            window:SetVisible(not windowFrame.Visible)
+        end
+    end)
+
     ui:Connect(minimizeButton.MouseButton1Click, function()
         window._minimized = not window._minimized
         sidebar.Visible = not window._minimized
@@ -504,7 +606,7 @@ function CakeUI:CreateWindow(options)
     end)
 
     ui:Connect(closeButton.MouseButton1Click, function()
-        ui:Destroy()
+        window:Close()
     end)
     closeButton.MouseEnter:Connect(function()
         playTween(closeButton, 0.12, { BackgroundColor3 = ui.Theme.Danger })
@@ -642,7 +744,7 @@ function CakeUI:CreateWindow(options)
                     if callback then
                         local ok, err = pcall(callback)
                         if not ok then
-                            warn("[CakeUI] Button callback failed:", err)
+                            warn("[Vector3] Button callback failed:", err)
                             ui:Notify({ Title = "Callback error", Content = tostring(err), Duration = 4 })
                         end
                     end
@@ -697,7 +799,7 @@ function CakeUI:CreateWindow(options)
                     if fireCallback and data.Callback then
                         local ok, err = pcall(data.Callback, value)
                         if not ok then
-                            warn("[CakeUI] Toggle callback failed:", err)
+                            warn("[Vector3] Toggle callback failed:", err)
                         end
                     end
                 end
@@ -753,7 +855,7 @@ function CakeUI:CreateWindow(options)
                     if fireCallback and data.Callback then
                         local ok, err = pcall(data.Callback, value)
                         if not ok then
-                            warn("[CakeUI] Slider callback failed:", err)
+                            warn("[Vector3] Slider callback failed:", err)
                         end
                     end
                 end
@@ -850,7 +952,7 @@ function CakeUI:CreateWindow(options)
                     if data.Callback then
                         local ok, err = pcall(data.Callback, selected)
                         if not ok then
-                            warn("[CakeUI] Dropdown callback failed:", err)
+                            warn("[Vector3] Dropdown callback failed:", err)
                         end
                     end
                 end
@@ -883,7 +985,7 @@ function CakeUI:CreateWindow(options)
                         if data.Callback then
                             local ok, err = pcall(data.Callback, selected)
                             if not ok then
-                                warn("[CakeUI] Dropdown callback failed:", err)
+                                warn("[Vector3] Dropdown callback failed:", err)
                             end
                         end
                     end)
@@ -928,7 +1030,7 @@ function CakeUI:CreateWindow(options)
                     if data.Callback then
                         local ok, err = pcall(data.Callback, box.Text, enterPressed)
                         if not ok then
-                            warn("[CakeUI] Input callback failed:", err)
+                            warn("[Vector3] Input callback failed:", err)
                         end
                     end
                 end)
@@ -979,7 +1081,7 @@ function CakeUI:CreateWindow(options)
                     if fireCallback and data.Callback then
                         local ok, err = pcall(data.Callback, current)
                         if not ok then
-                            warn("[CakeUI] ColorPicker callback failed:", err)
+                            warn("[Vector3] ColorPicker callback failed:", err)
                         end
                     end
                 end
@@ -1040,7 +1142,7 @@ function CakeUI:CreateWindow(options)
                         if data.Callback then
                             local ok, err = pcall(data.Callback, currentKey)
                             if not ok then
-                                warn("[CakeUI] Keybind callback failed:", err)
+                                warn("[Vector3] Keybind callback failed:", err)
                             end
                         end
                     end
@@ -1072,4 +1174,4 @@ function CakeUI:CreateWindow(options)
     return window
 end
 
-return CakeUI
+return Vector3
